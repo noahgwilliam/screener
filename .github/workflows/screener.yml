@@ -29,6 +29,7 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_FEED_CHANNEL_ID: ${{ secrets.DISCORD_FEED_CHANNEL_ID }}
+          DISCORD_IPOS_CHANNEL_ID: ${{ secrets.DISCORD_IPOS_CHANNEL_ID }}
           DISCORD_LOGS_CHANNEL_ID: ${{ secrets.DISCORD_LOGS_CHANNEL_ID }}
         run: |
           python screener_bot.py
