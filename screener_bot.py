@@ -129,14 +129,13 @@ class StockScreener:
     
     def format_ipo_table(self, data: list) -> str:
         """Format IPO data as a table in code block."""
-        lines = []
-        lines.append(f"📈 Recent IPOs (Small Cap, <$5) - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        lines.append("")
-        
         if not data:
             return "```\nNo IPO data available\n```"
         
-        # Table header
+        header = f"📈 **Recent IPOs (Small Cap, <$5)** - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        
+        # Table content
+        lines = []
         lines.append("Ticker  Price   Chg%    MCap     Sector")
         lines.append("------  -----   -----   -------  ------")
         
@@ -150,9 +149,9 @@ class StockScreener:
             line = f"{ticker:<6}  {price:<6}  {change:>6}  {mcap:<7}  {sector}"
             lines.append(line)
         
-        table = "```\n" + "\n".join(lines) + "\n```"
+        table = "```" + "\n".join(lines) + "\n```"
         link = "\nIPOs → https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5"
-        return table + link
+        return header + table + link
     
     async def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
@@ -266,6 +265,12 @@ class DiscordBot(discord.Client):
         logger.info(f'Logged in as {self.user}')
         await self.send_screener_update()
         await self.send_ipos_update()
+        
+        # Send any buffered logs to Discord logs channel
+        if self.discord_handler:
+            await self.discord_handler.send_logs(self)
+        
+        await self.close()
     
     async def send_ipos_update(self):
         """Fetch IPO data from Finviz and send to Discord IPOs channel."""
@@ -318,12 +323,6 @@ class DiscordBot(discord.Client):
             await channel.send(message)
         
         logger.info("Update sent!")
-        
-        # Send any buffered logs to Discord logs channel
-        if self.discord_handler:
-            await self.discord_handler.send_logs(self)
-        
-        await self.close()
 
 
 def main():
