@@ -1,0 +1,33 @@
+name: Stock Screener Bot
+
+on:
+  schedule:
+    # Run daily at 8:30am UTC
+    - cron: '30 8 * * *'
+  workflow_dispatch: # Allow manual trigger from Actions tab
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Run screener bot
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_FEED_CHANNEL_ID: ${{ secrets.DISCORD_FEED_CHANNEL_ID }}
+        run: |
+          python screener_bot.py
