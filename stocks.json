@@ -1,0 +1,12 @@
+{
+  "AI": ["BBAI", "CRNC", "DV", "RXRX"],
+  "Energy": ["BLDP", "CLNE", "FCEL", "GEVO", "LAC", "NRGV", "OPAL"],
+  "EVs": ["ABAT", "AIOT", "ENVX", "EVGO", "NKLA", "SES", "SLDP", "TE"],
+  "Environmental": ["NPWR"],
+  "Semiconductors": ["NVTS"],
+  "Space": ["RDW", "SPIR"],
+  "Fintech": ["MQ"],
+  "Healthcare": ["ALT", "ATAI", "CGC", "CMPS", "CRON", "GDRX", "HELP", "PACB", "SANA", "TDOC", "TLRY"],
+  "Education": ["COUR", "UDMY"],
+  "Software": ["PD"]
+}

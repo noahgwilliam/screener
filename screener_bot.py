@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Stock screener bot that posts updates to Discord."""
 import os
-import time
+import json
 import logging
 import asyncio
 import discord
 import finnhub
-import yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -60,19 +59,17 @@ class DiscordLogHandler(logging.Handler):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Stock lists by category
-STOCKS = {
-    'AI': ['BBAI', 'CRNC', 'DV', 'RXRX'],
-    'Energy': ['BLDP', 'CLNE', 'FCEL', 'GEVO', 'LAC', 'NRGV', 'OPAL'],
-    'EVs': ['ABAT', 'AIOT', 'ENVX', 'EVGO', 'NKLA', 'SES', 'SLDP', 'TE'],
-    'Environmental': ['NPWR'],
-    'Semiconductors': ['NVTS'],
-    'Space': ['RDW', 'SPIR'],
-    'Fintech': ['MQ'],
-    'Healthcare': ['ALT', 'ATAI', 'CGC', 'CMPS', 'CRON', 'GDRX', 'HELP', 'PACB', 'SANA', 'TDOC', 'TLRY'],
-    'Education': ['COUR', 'UDMY'],
-    'Software': ['PD']
-}
+def load_stocks():
+    """Load stocks from JSON file."""
+    try:
+        with open('stocks.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.error("stocks.json not found!")
+        return {}
+
+# Load stocks on startup
+STOCKS = load_stocks()
 
 class StockScreener:
     def __init__(self):
@@ -81,23 +78,7 @@ class StockScreener:
             raise ValueError("FINNHUB_API_KEY not found")
         self.finnhub_client = finnhub.Client(api_key=finnhub_key)
     
-    def get_market_cap_fallback(self, ticker: str) -> float:
-        """Fallback to Yahoo Finance for market cap if Finnhub fails."""
-        try:
-            logger.info(f"Trying Yahoo Finance fallback for {ticker}")
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            market_cap = info.get('marketCap', 0)
-            if market_cap:
-                # Convert to millions to match Finnhub format
-                return market_cap / 1_000_000
-            logger.warning(f"Yahoo Finance: No market cap data for {ticker}")
-            return 0
-        except Exception as e:
-            logger.warning(f"Yahoo Finance fallback failed for {ticker}: {str(e)}")
-            return 0
-    
-    def get_stock_data(self, ticker: str) -> dict:
+    async def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
         try:
             # Get quote
@@ -110,31 +91,13 @@ class StockScreener:
                 profile = self.finnhub_client.company_profile2(symbol=ticker)
                 name = profile.get('name', ticker)
                 market_cap = profile.get('marketCapitalization', 0)
-                
-                # If Finnhub doesn't have market cap, try Yahoo Finance
-                if not market_cap or market_cap == 0:
-                    logger.info(f"No market cap from Finnhub for {ticker}, trying fallback")
-                    market_cap = self.get_market_cap_fallback(ticker)
                     
             except Exception as e:
                 logger.warning(f"Finnhub API error - Unable to fetch profile for {ticker}: {str(e)}")
                 name = ticker
-                market_cap = self.get_market_cap_fallback(ticker)
+                market_cap = 0
             
-            # Get basic financials
-            try:
-                metrics = self.finnhub_client.company_basic_financials(ticker, 'all')
-                metric_data = metrics.get('metric', {})
-                pe_ratio = metric_data.get('peBasicExclExtraTTM')
-                week52_high = metric_data.get('52WeekHigh')
-                week52_low = metric_data.get('52WeekLow')
-                week52_return = metric_data.get('52WeekPriceReturnDaily')
-            except Exception as e:
-                logger.warning(f"Finnhub API error - Unable to fetch financials for {ticker}: {str(e)}")
-                pe_ratio = None
-                week52_high = None
-                week52_low = None
-                week52_return = None
+            # Skip basic financials to reduce API calls
             
             return {
                 'ticker': ticker,
@@ -146,27 +109,23 @@ class StockScreener:
                 'low': quote['l'],
                 'open': quote['o'],
                 'prev_close': quote['pc'],
-                'market_cap': market_cap,
-                'pe_ratio': pe_ratio,
-                '52w_high': week52_high,
-                '52w_low': week52_low,
-                '52w_return': week52_return
+                'market_cap': market_cap
             }
         except Exception as e:
             logger.error(f"Critical error - Failed to fetch data for {ticker}: {str(e)}")
             return None
     
-    def fetch_all_stocks(self) -> dict:
+    async def fetch_all_stocks(self) -> dict:
         """Fetch data for all tracked stocks."""
         all_data = {}
         for category, tickers in STOCKS.items():
             logger.info(f"Fetching {category} stocks: {tickers}")
             all_data[category] = []
             for ticker in tickers:
-                data = self.get_stock_data(ticker)
+                data = await self.get_stock_data(ticker)
                 if data:
                     all_data[category].append(data)
-                time.sleep(1)  # Rate limiting: 1 call/sec
+                await asyncio.sleep(1.5)  # Rate limiting: 1.5s between calls
         return all_data
     
     def format_table(self, data: dict) -> str:
@@ -240,7 +199,7 @@ class DiscordBot(discord.Client):
             return
         
         logger.info("Fetching stock data...")
-        data = self.screener.fetch_all_stocks()
+        data = await self.screener.fetch_all_stocks()
         
         logger.info("Formatting message...")
         message = self.screener.format_table(data)
