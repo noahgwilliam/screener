@@ -2,12 +2,63 @@
 """Stock screener bot that posts updates to Discord."""
 import os
 import time
+import logging
+import asyncio
 import discord
 import finnhub
+import yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Global reference for Discord logging
+discord_log_channel = None
+
+class DiscordLogHandler(logging.Handler):
+    """Custom logging handler that sends logs to Discord channel."""
+    
+    def __init__(self, channel_id: int):
+        super().__init__()
+        self.channel_id = channel_id
+        self.log_buffer = []
+        
+    def emit(self, record):
+        """Buffer log records to send to Discord."""
+        if record.levelno >= logging.WARNING:  # Only WARNING and ERROR
+            self.log_buffer.append(self.format(record))
+    
+    async def send_logs(self, client):
+        """Send buffered logs to Discord channel."""
+        if not self.log_buffer:
+            return
+            
+        channel = client.get_channel(self.channel_id)
+        if not channel:
+            print(f"Could not find logs channel {self.channel_id}")
+            return
+        
+        # Combine all logs into one message
+        log_message = "\n".join(self.log_buffer)
+        
+        # Send as code block, split if too long
+        formatted = f"```\n{log_message}\n```"
+        
+        if len(formatted) > 2000:
+            # Split into multiple messages if needed
+            chunks = [self.log_buffer[i:i+10] for i in range(0, len(self.log_buffer), 10)]
+            for chunk in chunks:
+                chunk_msg = "```\n" + "\n".join(chunk) + "\n```"
+                await channel.send(chunk_msg)
+        else:
+            await channel.send(formatted)
+        
+        # Clear buffer after sending
+        self.log_buffer.clear()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Stock lists by category
 STOCKS = {
@@ -30,6 +81,22 @@ class StockScreener:
             raise ValueError("FINNHUB_API_KEY not found")
         self.finnhub_client = finnhub.Client(api_key=finnhub_key)
     
+    def get_market_cap_fallback(self, ticker: str) -> float:
+        """Fallback to Yahoo Finance for market cap if Finnhub fails."""
+        try:
+            logger.info(f"Trying Yahoo Finance fallback for {ticker}")
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            market_cap = info.get('marketCap', 0)
+            if market_cap:
+                # Convert to millions to match Finnhub format
+                return market_cap / 1_000_000
+            logger.warning(f"Yahoo Finance: No market cap data for {ticker}")
+            return 0
+        except Exception as e:
+            logger.warning(f"Yahoo Finance fallback failed for {ticker}: {str(e)}")
+            return 0
+    
     def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
         try:
@@ -43,9 +110,16 @@ class StockScreener:
                 profile = self.finnhub_client.company_profile2(symbol=ticker)
                 name = profile.get('name', ticker)
                 market_cap = profile.get('marketCapitalization', 0)
-            except:
+                
+                # If Finnhub doesn't have market cap, try Yahoo Finance
+                if not market_cap or market_cap == 0:
+                    logger.info(f"No market cap from Finnhub for {ticker}, trying fallback")
+                    market_cap = self.get_market_cap_fallback(ticker)
+                    
+            except Exception as e:
+                logger.warning(f"Finnhub API error - Unable to fetch profile for {ticker}: {str(e)}")
                 name = ticker
-                market_cap = 0
+                market_cap = self.get_market_cap_fallback(ticker)
             
             # Get basic financials
             try:
@@ -55,7 +129,8 @@ class StockScreener:
                 week52_high = metric_data.get('52WeekHigh')
                 week52_low = metric_data.get('52WeekLow')
                 week52_return = metric_data.get('52WeekPriceReturnDaily')
-            except:
+            except Exception as e:
+                logger.warning(f"Finnhub API error - Unable to fetch financials for {ticker}: {str(e)}")
                 pe_ratio = None
                 week52_high = None
                 week52_low = None
@@ -78,13 +153,14 @@ class StockScreener:
                 '52w_return': week52_return
             }
         except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
+            logger.error(f"Critical error - Failed to fetch data for {ticker}: {str(e)}")
             return None
     
     def fetch_all_stocks(self) -> dict:
         """Fetch data for all tracked stocks."""
         all_data = {}
         for category, tickers in STOCKS.items():
+            logger.info(f"Fetching {category} stocks: {tickers}")
             all_data[category] = []
             for ticker in tickers:
                 data = self.get_stock_data(ticker)
@@ -139,22 +215,34 @@ class DiscordBot(discord.Client):
         super().__init__(intents=intents)
         self.screener = StockScreener()
         self.channel_id = int(os.getenv('DISCORD_FEED_CHANNEL_ID'))
+        self.logs_channel_id = int(os.getenv('DISCORD_LOGS_CHANNEL_ID', 0))
+        
+        # Set up Discord log handler
+        if self.logs_channel_id:
+            self.discord_handler = DiscordLogHandler(self.logs_channel_id)
+            self.discord_handler.setLevel(logging.WARNING)
+            self.discord_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+            logger.addHandler(self.discord_handler)
+        else:
+            self.discord_handler = None
     
     async def on_ready(self):
-        print(f'Logged in as {self.user}')
+        logger.info(f'Logged in as {self.user}')
         await self.send_screener_update()
     
     async def send_screener_update(self):
         """Fetch stock data and send to Discord channel."""
         channel = self.get_channel(self.channel_id)
         if not channel:
-            print(f"Could not find channel {self.channel_id}")
+            logger.error(f"Critical error - Feed channel {self.channel_id} not found")
+            if self.discord_handler:
+                await self.discord_handler.send_logs(self)
             return
         
-        print("Fetching stock data...")
+        logger.info("Fetching stock data...")
         data = self.screener.fetch_all_stocks()
         
-        print("Formatting message...")
+        logger.info("Formatting message...")
         message = self.screener.format_table(data)
         
         # Discord has a 2000 char limit, so split if needed
@@ -165,7 +253,12 @@ class DiscordBot(discord.Client):
         else:
             await channel.send(message)
         
-        print("Update sent!")
+        logger.info("Update sent!")
+        
+        # Send any buffered logs to Discord logs channel
+        if self.discord_handler:
+            await self.discord_handler.send_logs(self)
+        
         await self.close()
 
 
