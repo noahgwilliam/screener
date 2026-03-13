@@ -49,14 +49,6 @@ pip install -r requirements.txt
 python screener_bot.py
 ```
 
-## Deployment (Oracle Free Tier)
-
-Can be deployed as a scheduled job on Oracle Cloud Always Free tier using cron:
-```bash
-# Run daily at 4pm EST (market close)
-0 16 * * 1-5 cd /path/to/screener && /usr/bin/python3 screener_bot.py
-```
-
 ## API Limits
 
 - Finnhub free tier: 60 calls/min
