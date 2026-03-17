@@ -49,16 +49,19 @@ jobs:
               # Deprecations that affect runners
               'deprecation', 'deprecated', 'sunset', 'end of life',
               'no longer supported', 'will be removed',
-              # Actions platform (affects all workflows)
-              'actions platform', 'github actions', 'workflow'
+              # Actions platform (must be specific - not just "workflow")
+              'actions platform', 'github actions workflow', 'actions workflow'
           ]
           
           # Exclude these patterns (not relevant to runner operations)
           exclude_keywords = [
-              'github mobile', 'github desktop', 'copilot chat',
+              'visual studio', 'vs code', 'vscode',
+              'github mobile', 'github desktop', 
+              'copilot', 'code completions', 'ai pair programmer',
               'dependabot', 'code scanning', 'secret scanning',
               'github discussions', 'github sponsors', 'enterprise server',
-              'pull request', 'issue', 'project', 'repository'
+              'pull request', 'issue', 'project', 'repository',
+              'merge queue', 'branch protection'
           ]
           
           runner_updates = []
