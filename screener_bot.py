@@ -79,7 +79,11 @@ class StockScreener:
         self.finnhub_client = finnhub.Client(api_key=finnhub_key)
     
     async def fetch_finviz_ipos(self) -> list:
-        """Scrape Finviz for recent IPOs under $5."""
+        """Scrape Finviz for recent IPOs under $5.
+        
+        Returns a list of pages, where each page contains up to 20 stocks.
+        This preserves the page structure from Finviz for proper Discord formatting.
+        """
         import re
         from urllib.request import Request, urlopen
         
@@ -119,13 +123,15 @@ class StockScreener:
         
         try:
             logger.info("Scraping Finviz IPO screener...")
-            all_stocks = []
+            pages = []
             for page_start in [1, 21, 41]:
                 stocks = scrape_page(page_start)
-                all_stocks.extend(stocks)
+                if stocks:  # Only add non-empty pages
+                    pages.append(stocks)
                 await asyncio.sleep(1)
-            logger.info(f"Scraped {len(all_stocks)} IPO stocks from Finviz")
-            return all_stocks
+            total_stocks = sum(len(page) for page in pages)
+            logger.info(f"Scraped {total_stocks} IPO stocks across {len(pages)} pages from Finviz")
+            return pages
         except Exception as e:
             logger.error(f"Failed to scrape Finviz: {str(e)}")
             return []
@@ -289,25 +295,21 @@ class DiscordBot(discord.Client):
             return
         
         logger.info("Fetching Finviz IPO data...")
-        data = await self.screener.fetch_finviz_ipos()
+        pages = await self.screener.fetch_finviz_ipos()
         
-        logger.info("Formatting IPO message...")
-        message = self.screener.format_ipo_table(data)
+        if not pages:
+            logger.info("No IPO data to send")
+            return
         
-        # Discord has a 2000 char limit
-        # If message is too long, split the data and send multiple tables
-        if len(message) > 1900:  # Leave buffer for safety
-            # Split data into chunks of ~30 stocks each
-            chunk_size = 30
-            for i in range(0, len(data), chunk_size):
-                chunk_data = data[i:i+chunk_size]
-                # Don't include link in intermediate chunks
-                chunk_message = self.screener.format_ipo_table(chunk_data, include_link=False)
-                await channel.send(chunk_message)
-            # Send the link once at the very end
-            await channel.send("IPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>")
-        else:
-            await channel.send(message)
+        logger.info(f"Sending {len(pages)} code blocks (one per page)...")
+        
+        # Send one code block per page (without link)
+        for page_data in pages:
+            chunk_message = self.screener.format_ipo_table(page_data, include_link=False)
+            await channel.send(chunk_message)
+        
+        # Send the link once at the very end
+        await channel.send("IPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>")
         
         logger.info("IPO update sent!")
     
