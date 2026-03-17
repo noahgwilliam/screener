@@ -35,7 +35,8 @@ jobs:
           cat *.txt > combined.log 2>/dev/null || echo "No logs found"
           
           # Search for warnings, errors, or deprecation notices
-          grep -iE "warning:|error:|deprecated|deprecation" combined.log > warnings.txt || echo "No warnings found" > warnings.txt
+          # Matches both "WARNING -" (Python) and "Warning:" (GitHub Actions)
+          grep -iE "warning|error|deprecated|deprecation" combined.log > warnings.txt || echo "No warnings found" > warnings.txt
           
           # Show what we found
           echo "Found warnings/errors:"
