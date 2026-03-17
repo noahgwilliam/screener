@@ -130,7 +130,7 @@ class StockScreener:
             logger.error(f"Failed to scrape Finviz: {str(e)}")
             return []
     
-    def format_ipo_table(self, data: list) -> str:
+    def format_ipo_table(self, data: list, include_link: bool = True) -> str:
         """Format IPO data as a table in code block."""
         if not data:
             return "```\nNo IPO data available\n```"
@@ -151,8 +151,12 @@ class StockScreener:
             line = f"{ticker:<6}  {price:<6}  {change:>6}  {mcap:<7}  {sector}"
             lines.append(line)
         
+        message = "```\n" + "\n".join(lines) + "\n```"
         
-        return "```\n" + "\n".join(lines) + "\n```\nIPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>"
+        if include_link:
+            message += "\nIPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>"
+        
+        return message
     
     async def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
@@ -297,8 +301,11 @@ class DiscordBot(discord.Client):
             chunk_size = 30
             for i in range(0, len(data), chunk_size):
                 chunk_data = data[i:i+chunk_size]
-                chunk_message = self.screener.format_ipo_table(chunk_data)
+                # Don't include link in intermediate chunks
+                chunk_message = self.screener.format_ipo_table(chunk_data, include_link=False)
                 await channel.send(chunk_message)
+            # Send the link once at the very end
+            await channel.send("IPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>")
         else:
             await channel.send(message)
         
