@@ -151,10 +151,8 @@ class StockScreener:
             line = f"{ticker:<6}  {price:<6}  {change:>6}  {mcap:<7}  {sector}"
             lines.append(line)
         
-        lines.append("")
-        lines.append("IPOs → https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5")
         
-        return "```\n" + "\n".join(lines) + "\n```"
+        return "```\n" + "\n".join(lines) + "\n```\nIPOs → <https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5>"
     
     async def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
