@@ -32,4 +32,82 @@ jobs:
           DISCORD_IPOS_CHANNEL_ID: ${{ secrets.DISCORD_IPOS_CHANNEL_ID }}
           DISCORD_LOGS_CHANNEL_ID: ${{ secrets.DISCORD_LOGS_CHANNEL_ID }}
         run: |
-          python screener_bot.py
+          python screener_bot.py 2>&1 | tee output.log
+      
+      - name: Check for warnings/errors and post to Discord
+        if: always()
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_LOGS_CHANNEL_ID: ${{ secrets.DISCORD_LOGS_CHANNEL_ID }}
+        run: |
+          # Check if there are any warnings or errors in the output
+          if [ -f output.log ] && (grep -iE "warning|error|deprecated" output.log > /dev/null); then
+            echo "Found warnings/errors in output, posting to Discord..."
+            
+            # Extract warnings/errors
+            grep -iE "warning|error|deprecated" output.log > warnings.txt || true
+            
+            # Post to Discord using a Python script
+            python3 << 'EOF'
+          import os
+          import json
+          import requests
+          
+          token = os.getenv('DISCORD_BOT_TOKEN')
+          channel_id = os.getenv('DISCORD_LOGS_CHANNEL_ID')
+          
+          if not token or not channel_id:
+              print("Discord credentials not configured")
+              exit(0)
+          
+          try:
+              with open('warnings.txt', 'r') as f:
+                  warnings = f.read().strip()
+              
+              if not warnings:
+                  print("No warnings to post")
+                  exit(0)
+              
+              # Send as code block, split if too long
+              message = f"```\n{warnings}\n```"
+              
+              if len(message) > 2000:
+                  # Split into chunks under 2000 chars
+                  chunks = []
+                  lines = warnings.split('\n')
+                  current_chunk = []
+                  current_length = 8  # Account for ``` and newlines
+                  
+                  for line in lines:
+                      line_length = len(line) + 1  # +1 for newline
+                      if current_length + line_length > 1990:
+                          chunks.append('\n'.join(current_chunk))
+                          current_chunk = [line]
+                          current_length = 8 + line_length
+                      else:
+                          current_chunk.append(line)
+                          current_length += line_length
+                  
+                  if current_chunk:
+                      chunks.append('\n'.join(current_chunk))
+              else:
+                  chunks = [warnings]
+              
+              # Post to Discord
+              url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+              headers = {
+                  'Authorization': f'Bot {token}',
+                  'Content-Type': 'application/json'
+              }
+              
+              for chunk in chunks:
+                  data = {'content': f"```\n{chunk}\n```"}
+                  response = requests.post(url, headers=headers, json=data)
+                  if response.status_code in [200, 201]:
+                      print("Posted warnings to Discord logs channel")
+                  else:
+                      print(f"Failed to post to Discord: {response.status_code}")
+          except Exception as e:
+              print(f"Error posting to Discord: {e}")
+          EOF
+          fi
