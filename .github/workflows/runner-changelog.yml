@@ -22,22 +22,20 @@ jobs:
       
       - name: Fetch GitHub changelog
         run: |
-          # Fetch the GitHub changelog RSS feed
-          curl -s "https://github.blog/changelog/feed/" > changelog.xml
+          # Fetch changelog entries via WordPress API
+          curl -s "https://github.blog/wp-json/wp/v2/changelogs?per_page=50&orderby=date&order=desc" > changelog.json
           
-          # Parse RSS for runner-related entries
+          # Parse JSON for runner-related entries
           python3 << 'EOF'
-          import xml.etree.ElementTree as ET
-          import re
           import json
-          from datetime import datetime, timedelta
+          from html import unescape
+          import re
           
-          # Parse RSS feed
-          tree = ET.parse('changelog.xml')
-          root = tree.getroot()
+          # Read the JSON
+          with open('changelog.json', 'r') as f:
+              entries = json.load(f)
           
           # Keywords to identify runner-related updates
-          # These cover: runner versions, images, deprecations, environment changes
           runner_keywords = [
               # Runner core
               'runner', 'runners', 'self-hosted', 'actions runner',
@@ -52,31 +50,34 @@ jobs:
               'deprecation', 'deprecated', 'sunset', 'end of life',
               'no longer supported', 'will be removed',
               # Actions platform (affects all workflows)
-              'actions platform', 'github actions runner',
-              'workflow', 'job environment'
+              'actions platform', 'github actions', 'workflow'
           ]
           
           # Exclude these patterns (not relevant to runner operations)
           exclude_keywords = [
-              'github mobile', 'github desktop', 'copilot',
+              'github mobile', 'github desktop', 'copilot chat',
               'dependabot', 'code scanning', 'secret scanning',
-              'github discussions', 'github sponsors'
+              'github discussions', 'github sponsors', 'enterprise server',
+              'pull request', 'issue', 'project', 'repository'
           ]
           
           runner_updates = []
           
-          # Check entries from the last 14 days on first run, then just new ones
-          # This ensures we catch recent important notices (like Node.js deprecation)
-          cutoff_date = datetime.now() - timedelta(days=14)
+          print(f"Fetched {len(entries)} total changelog entries")
           
-          for item in root.findall('.//item'):
-              title = item.find('title').text if item.find('title') is not None else ''
-              link = item.find('link').text if item.find('link') is not None else ''
-              pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ''
-              description = item.find('description').text if item.find('description') is not None else ''
+          for entry in entries:
+              title = unescape(entry['title']['rendered'])
+              link = entry['link']
+              date = entry['date']
+              
+              # Get excerpt/description
+              excerpt = entry.get('excerpt', {}).get('rendered', '')
+              # Clean HTML tags
+              excerpt = re.sub(r'<[^>]+>', '', excerpt)
+              excerpt = unescape(excerpt).strip()
               
               # Check if this is runner-related
-              combined_text = (title + ' ' + description).lower()
+              combined_text = (title + ' ' + excerpt).lower()
               
               # First check if it should be excluded
               is_excluded = any(keyword.lower() in combined_text for keyword in exclude_keywords)
@@ -85,22 +86,23 @@ jobs:
               
               # Then check if it matches runner keywords
               if any(keyword.lower() in combined_text for keyword in runner_keywords):
-                  # Create unique ID for this entry (to track what we've posted)
-                  entry_id = link.split('/')[-1] if link else title
+                  # Create unique ID for this entry
+                  entry_id = link.split('/')[-1]
                   
                   runner_updates.append({
                       'id': entry_id,
                       'title': title,
                       'link': link,
-                      'date': pub_date,
-                      'description': description
+                      'date': date,
+                      'description': excerpt
                   })
+                  print(f"Matched: {title}")
           
           # Save to file
           with open('runner_updates.json', 'w') as f:
               json.dump(runner_updates, f, indent=2)
           
-          print(f"Found {len(runner_updates)} runner-related changelog entries")
+          print(f"\nFound {len(runner_updates)} runner-related changelog entries")
           EOF
       
       - name: Check for new updates
