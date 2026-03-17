@@ -290,11 +290,15 @@ class DiscordBot(discord.Client):
         logger.info("Formatting IPO message...")
         message = self.screener.format_ipo_table(data)
         
-        # Discord has a 2000 char limit, so split if needed
-        if len(message) > 2000:
-            chunks = [message[i:i+2000] for i in range(0, len(message), 2000)]
-            for chunk in chunks:
-                await channel.send(chunk)
+        # Discord has a 2000 char limit
+        # If message is too long, split the data and send multiple tables
+        if len(message) > 1900:  # Leave buffer for safety
+            # Split data into chunks of ~30 stocks each
+            chunk_size = 30
+            for i in range(0, len(data), chunk_size):
+                chunk_data = data[i:i+chunk_size]
+                chunk_message = self.screener.format_ipo_table(chunk_data)
+                await channel.send(chunk_message)
         else:
             await channel.send(message)
         
