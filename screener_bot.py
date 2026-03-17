@@ -133,7 +133,7 @@ class StockScreener:
             return "```\nNo IPO data available\n```"
         
         lines = []
-        lines.append(f"Recent IPOs (Small Cap, <$5) - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        lines.append(f"📈 Recent IPOs (Small Cap, <$5) - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         lines.append("")
         lines.append("Ticker  Price   Chg%    MCap     Sector")
         lines.append("------  -----   -----   -------  ------")
@@ -151,7 +151,7 @@ class StockScreener:
         lines.append("")
         lines.append("IPOs → https://finviz.com/screener.ashx?v=111&f=cap_small,ipodate_prev5yrs,sh_price_u5")
         
-        return "📈 ```\n" + "\n".join(lines) + "\n```"
+        return "```\n" + "\n".join(lines) + "\n```"
     
     async def get_stock_data(self, ticker: str) -> dict:
         """Fetch stock data from Finnhub."""
