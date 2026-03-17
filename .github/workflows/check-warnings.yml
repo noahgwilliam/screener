@@ -1,0 +1,120 @@
+name: Check Workflow Warnings
+
+on:
+  workflow_run:
+    workflows: ["Stock Screener Bot"]
+    types:
+      - completed
+
+jobs:
+  check-warnings:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Get workflow run logs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get the workflow run ID
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          REPO="${{ github.repository }}"
+          
+          echo "Fetching logs for workflow run $RUN_ID..."
+          
+          # Download logs
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/$REPO/actions/runs/$RUN_ID/logs" \
+            > logs.zip
+          
+          # Extract logs
+          unzip -q logs.zip
+          
+          # Combine all log files
+          cat *.txt > combined.log 2>/dev/null || echo "No logs found"
+          
+          # Search for warnings, errors, or deprecation notices
+          grep -iE "warning:|error:|deprecated|deprecation" combined.log > warnings.txt || echo "No warnings found" > warnings.txt
+          
+          # Show what we found
+          echo "Found warnings/errors:"
+          cat warnings.txt
+      
+      - name: Post warnings to Discord
+        if: always()
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_LOGS_CHANNEL_ID: ${{ secrets.DISCORD_LOGS_CHANNEL_ID }}
+        run: |
+          if [ ! -f warnings.txt ]; then
+            echo "No warnings file found"
+            exit 0
+          fi
+          
+          # Check if there are actual warnings (not just "No warnings found")
+          if grep -q "No warnings found" warnings.txt; then
+            echo "No warnings to report"
+            exit 0
+          fi
+          
+          python3 << 'EOF'
+          import os
+          import requests
+          
+          token = os.getenv('DISCORD_BOT_TOKEN')
+          channel_id = os.getenv('DISCORD_LOGS_CHANNEL_ID')
+          
+          if not token or not channel_id:
+              print("Discord credentials not configured")
+              exit(0)
+          
+          try:
+              with open('warnings.txt', 'r') as f:
+                  warnings = f.read().strip()
+              
+              if not warnings or warnings == "No warnings found":
+                  print("No warnings to post")
+                  exit(0)
+              
+              # Send as code block, split if too long
+              if len(warnings) > 1800:
+                  # Split into chunks
+                  chunks = []
+                  lines = warnings.split('\n')
+                  current_chunk = []
+                  current_length = 8  # Account for ``` and newlines
+                  
+                  for line in lines:
+                      line_length = len(line) + 1
+                      if current_length + line_length > 1990:
+                          if current_chunk:
+                              chunks.append('\n'.join(current_chunk))
+                          current_chunk = [line]
+                          current_length = 8 + line_length
+                      else:
+                          current_chunk.append(line)
+                          current_length += line_length
+                  
+                  if current_chunk:
+                      chunks.append('\n'.join(current_chunk))
+              else:
+                  chunks = [warnings]
+              
+              # Post to Discord
+              url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+              headers = {
+                  'Authorization': f'Bot {token}',
+                  'Content-Type': 'application/json'
+              }
+              
+              for chunk in chunks:
+                  data = {'content': f"```\n{chunk}\n```"}
+                  response = requests.post(url, headers=headers, json=data)
+                  if response.status_code in [200, 201]:
+                      print(f"Posted warnings chunk to Discord")
+                  else:
+                      print(f"Failed to post to Discord: {response.status_code} - {response.text}")
+          except Exception as e:
+              print(f"Error posting to Discord: {e}")
+          EOF
