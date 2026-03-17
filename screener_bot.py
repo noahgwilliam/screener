@@ -86,7 +86,10 @@ class StockScreener:
         def extract_text(tag_content):
             """Extract text from HTML tag."""
             text = re.sub(r'<[^>]+>', '', tag_content)
-            return text.replace('&amp;', '&').strip()
+            text = text.replace('&amp;', '&')
+            # Remove all newlines and normalize whitespace
+            text = re.sub(r'\s+', ' ', text)
+            return text.strip()
         
         def scrape_page(page_start):
             """Scrape one page of Finviz results."""
