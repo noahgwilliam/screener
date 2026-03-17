@@ -1,0 +1,269 @@
+name: GitHub Runner Changelog Monitor
+
+on:
+  schedule:
+    # Run daily at 9:00 UTC (after the screener runs)
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-changelog:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repo (for tracking state)
+        uses: actions/checkout@v4
+      
+      - name: Restore posted IDs cache
+        uses: actions/cache/restore@v4
+        with:
+          path: posted_ids.txt
+          key: runner-changelog-posted-ids
+      
+      - name: Fetch GitHub changelog
+        run: |
+          # Fetch the GitHub changelog RSS feed
+          curl -s "https://github.blog/changelog/feed/" > changelog.xml
+          
+          # Parse RSS for runner-related entries
+          python3 << 'EOF'
+          import xml.etree.ElementTree as ET
+          import re
+          import json
+          from datetime import datetime, timedelta
+          
+          # Parse RSS feed
+          tree = ET.parse('changelog.xml')
+          root = tree.getroot()
+          
+          # Keywords to identify runner-related updates
+          # These cover: runner versions, images, deprecations, environment changes
+          runner_keywords = [
+              # Runner core
+              'runner', 'runners', 'self-hosted', 'actions runner',
+              # Runner images and versions
+              'ubuntu-latest', 'ubuntu-24', 'ubuntu-22', 'ubuntu-20',
+              'windows-latest', 'windows-2022', 'windows-2019',
+              'macos-latest', 'macos-14', 'macos-13', 'macos-12',
+              'runner image', 'runner-images', 'hosted runner',
+              # Runtime environments
+              'node.js', 'nodejs', 'python version', 'go version',
+              # Deprecations that affect runners
+              'deprecation', 'deprecated', 'sunset', 'end of life',
+              'no longer supported', 'will be removed',
+              # Actions platform (affects all workflows)
+              'actions platform', 'github actions runner',
+              'workflow', 'job environment'
+          ]
+          
+          # Exclude these patterns (not relevant to runner operations)
+          exclude_keywords = [
+              'github mobile', 'github desktop', 'copilot',
+              'dependabot', 'code scanning', 'secret scanning',
+              'github discussions', 'github sponsors'
+          ]
+          
+          runner_updates = []
+          
+          # Check entries from the last 14 days on first run, then just new ones
+          # This ensures we catch recent important notices (like Node.js deprecation)
+          cutoff_date = datetime.now() - timedelta(days=14)
+          
+          for item in root.findall('.//item'):
+              title = item.find('title').text if item.find('title') is not None else ''
+              link = item.find('link').text if item.find('link') is not None else ''
+              pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ''
+              description = item.find('description').text if item.find('description') is not None else ''
+              
+              # Check if this is runner-related
+              combined_text = (title + ' ' + description).lower()
+              
+              # First check if it should be excluded
+              is_excluded = any(keyword.lower() in combined_text for keyword in exclude_keywords)
+              if is_excluded:
+                  continue
+              
+              # Then check if it matches runner keywords
+              if any(keyword.lower() in combined_text for keyword in runner_keywords):
+                  # Create unique ID for this entry (to track what we've posted)
+                  entry_id = link.split('/')[-1] if link else title
+                  
+                  runner_updates.append({
+                      'id': entry_id,
+                      'title': title,
+                      'link': link,
+                      'date': pub_date,
+                      'description': description
+                  })
+          
+          # Save to file
+          with open('runner_updates.json', 'w') as f:
+              json.dump(runner_updates, f, indent=2)
+          
+          print(f"Found {len(runner_updates)} runner-related changelog entries")
+          EOF
+      
+      - name: Check for new updates
+        id: check_new
+        run: |
+          # Load previously posted IDs if they exist (from cache/artifact)
+          if [ -f "posted_ids.txt" ]; then
+            echo "Loading previously posted IDs..."
+            cat posted_ids.txt
+          else
+            echo "No previous state found, will post recent updates"
+            touch posted_ids.txt
+          fi
+          
+          # Filter out already-posted updates
+          python3 << 'EOF'
+          import json
+          
+          # Load posted IDs
+          posted_ids = set()
+          try:
+              with open('posted_ids.txt', 'r') as f:
+                  posted_ids = set(line.strip() for line in f if line.strip())
+          except FileNotFoundError:
+              pass
+          
+          # Load all updates
+          with open('runner_updates.json', 'r') as f:
+              all_updates = json.load(f)
+          
+          # Filter to only new ones
+          new_updates = [u for u in all_updates if u['id'] not in posted_ids]
+          
+          # Save new updates
+          with open('new_runner_updates.json', 'w') as f:
+              json.dump(new_updates, f, indent=2)
+          
+          print(f"Total updates found: {len(all_updates)}")
+          print(f"New updates to post: {len(new_updates)}")
+          
+          # Create updated posted IDs list
+          all_ids = posted_ids.union(set(u['id'] for u in new_updates))
+          with open('posted_ids_new.txt', 'w') as f:
+              for id in sorted(all_ids):
+                  f.write(f"{id}\n")
+          EOF
+          
+          # Check if we have new updates
+          UPDATE_COUNT=$(python3 -c "import json; data=json.load(open('new_runner_updates.json')); print(len(data))")
+          if [ "$UPDATE_COUNT" -gt 0 ]; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "update_count=$UPDATE_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "update_count=0" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Post updates to Discord
+        if: steps.check_new.outputs.has_updates == 'true'
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_RUNNER_CHANGELOG_CHANNEL_ID: ${{ secrets.DISCORD_RUNNER_CHANGELOG_CHANNEL_ID }}
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+          import requests
+          import html
+          import re
+          
+          token = os.getenv('DISCORD_BOT_TOKEN')
+          channel_id = os.getenv('DISCORD_RUNNER_CHANGELOG_CHANNEL_ID')
+          
+          if not token or not channel_id:
+              print("Discord credentials not configured")
+              exit(0)
+          
+          try:
+              with open('new_runner_updates.json', 'r') as f:
+                  updates = json.load(f)
+              
+              if not updates:
+                  print("No updates to post")
+                  exit(0)
+              
+              # Post to Discord
+              url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+              headers = {
+                  'Authorization': f'Bot {token}',
+                  'Content-Type': 'application/json'
+              }
+              
+              for update in updates:
+                  title = update['title']
+                  link = update['link']
+                  date = update['date']
+                  description = update.get('description', '')
+                  
+                  # Clean HTML from description
+                  description = html.unescape(description)
+                  description = re.sub('<[^<]+?>', '', description)
+                  description = description.strip()
+                  
+                  # Determine category based on content
+                  title_lower = title.lower()
+                  category = "📢"  # Default
+                  
+                  if 'deprecat' in title_lower or 'sunset' in title_lower or 'end of life' in title_lower:
+                      category = "⚠️ DEPRECATION"
+                  elif 'runner' in title_lower and 'image' in title_lower:
+                      category = "🖼️ RUNNER IMAGE"
+                  elif 'ubuntu' in title_lower or 'windows' in title_lower or 'macos' in title_lower:
+                      category = "🖥️ OS UPDATE"
+                  elif 'node' in title_lower or 'python' in title_lower or 'go' in title_lower:
+                      category = "🔧 RUNTIME"
+                  elif 'action' in title_lower:
+                      category = "⚡ ACTIONS"
+                  
+                  # Truncate if too long
+                  if len(description) > 400:
+                      description = description[:397] + '...'
+                  
+                  # Format message as code block
+                  if description:
+                      content = f"{category}\n{title}\n\n{description}\n\n{link}"
+                  else:
+                      content = f"{category}\n{title}\n\n{link}"
+                  
+                  # Wrap in code block
+                  message = f"```\n{content}\n```"
+                  
+                  if len(message) > 2000:
+                      # If too long, shorten description or remove it
+                      content = f"{category}\n{title}\n\n{link}"
+                      message = f"```\n{content}\n```"
+                  
+                  data = {'content': message}
+                  response = requests.post(url, headers=headers, json=data)
+                  
+                  if response.status_code in [200, 201]:
+                      print(f"Posted: {title}")
+                  else:
+                      print(f"Failed to post: {response.status_code} - {response.text}")
+              
+              print(f"Posted {len(updates)} runner changelog updates to Discord")
+          except Exception as e:
+              print(f"Error posting to Discord: {e}")
+              import traceback
+              traceback.print_exc()
+          EOF
+      
+      - name: Save posted IDs cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: posted_ids_new.txt
+          key: runner-changelog-posted-ids-${{ github.run_id }}
+      
+      - name: Update state for next run
+        if: always()
+        run: |
+          # Move the new state to be the current state
+          if [ -f "posted_ids_new.txt" ]; then
+            mv posted_ids_new.txt posted_ids.txt
+          fi
+
