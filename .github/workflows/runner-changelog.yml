@@ -219,6 +219,8 @@ jobs:
                       category = "⚠️ DEPRECATION"
                   elif 'runner' in title_lower and 'image' in title_lower:
                       category = "🖼️ RUNNER IMAGE"
+                  elif 'runner' in title_lower or 'self-hosted' in title_lower:
+                      category = "🏃 RUNNER"
                   elif 'ubuntu' in title_lower or 'windows' in title_lower or 'macos' in title_lower:
                       category = "🖥️ OS UPDATE"
                   elif 'node' in title_lower or 'python' in title_lower or 'go' in title_lower:
