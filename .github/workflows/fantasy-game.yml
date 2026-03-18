@@ -14,6 +14,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Restore price history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: fantasy_prices.json
+          key: fantasy-prices-${{ hashFiles('fantasy_team.json') }}
+          restore-keys: |
+            fantasy-prices-
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -51,7 +59,7 @@ jobs:
           
           print(f"Total available tickers: {len(all_tickers)}")
           
-          # Load fantasy team
+          # Load fantasy team (only contains team members - YOU edit this)
           team_file = 'fantasy_team.json'
           if not os.path.exists(team_file):
               print("ERROR: fantasy_team.json not found! Please create it first.")
@@ -61,14 +69,25 @@ jobs:
               team_data = json.load(f)
           
           team = team_data.get('team', [])
-          starting_prices = team_data.get('starting_prices', {})  # When fantasy team was created
-          last_week_prices = team_data.get('last_week_prices', {})  # Previous Monday
           
           if not team:
               print("ERROR: No team found in fantasy_team.json")
               exit(1)
           
           print(f"Loaded team: {team}")
+          
+          # Load price history from cache (managed by workflow)
+          price_history_file = 'fantasy_prices.json'
+          if os.path.exists(price_history_file):
+              with open(price_history_file, 'r') as f:
+                  price_history = json.load(f)
+              starting_prices = price_history.get('starting_prices', {})
+              last_week_prices = price_history.get('last_week_prices', {})
+              print("Loaded price history from cache")
+          else:
+              starting_prices = {}
+              last_week_prices = {}
+              print("No price history found - first run")
           
           # Fetch current prices for ALL tickers
           current_prices = {}
@@ -118,16 +137,15 @@ jobs:
                   if response.status_code in [200, 201]:
                       print("Posted initialization message to Discord")
               
-              # Save and exit
-              team_data = {
-                  'team': team,
+              # Save price history and exit
+              price_history = {
                   'starting_prices': starting_prices,
                   'last_week_prices': last_week_prices,
                   'last_updated': datetime.now().strftime('%Y-%m-%d')
               }
               
-              with open(team_file, 'w') as f:
-                  json.dump(team_data, f, indent=2)
+              with open('fantasy_prices.json', 'w') as f:
+                  json.dump(price_history, f, indent=2)
               
               print("Saved starting prices. Run again next Monday for scoring.")
               exit(0)
@@ -303,17 +321,23 @@ jobs:
           else:
               print("Discord credentials not configured")
           
+          # Save price history to separate file for caching
+          price_history = {
+              'starting_prices': starting_prices,
+              'last_week_prices': current_prices,
+              'last_updated': date_str
+          }
+          
+          with open('fantasy_prices.json', 'w') as f:
+              json.dump(price_history, f, indent=2)
+          
+          print("Saved price history for next week")
+          
           EOF
       
-      - name: Commit fantasy team file (if changed)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          if [ -f fantasy_team.json ]; then
-            git add fantasy_team.json
-            git diff --staged --quiet || git commit -m "Update fantasy team data
-            
-            Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-            git push
-          fi
+      - name: Save price history cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fantasy_prices.json
+          key: fantasy-prices-${{ hashFiles('fantasy_team.json') }}-${{ github.run_number }}
