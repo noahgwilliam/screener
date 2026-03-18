@@ -1,0 +1,319 @@
+name: Fantasy Stock Game
+
+on:
+  schedule:
+    # Run every Monday at 9:30 UTC (after markets might open)
+    - cron: '30 9 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  fantasy-update:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests finnhub-python
+      
+      - name: Run fantasy stock game
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_FANTASY_CHANNEL_ID: ${{ secrets.DISCORD_FANTASY_CHANNEL_ID }}
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+          import requests
+          import finnhub
+          import random
+          from datetime import datetime
+          
+          # Initialize Finnhub client
+          finnhub_client = finnhub.Client(api_key=os.getenv('FINNHUB_API_KEY'))
+          
+          # Load stocks from stocks.json
+          with open('stocks.json', 'r') as f:
+              stocks_data = json.load(f)
+          
+          # Flatten all tickers
+          all_tickers = []
+          for category, tickers in stocks_data.items():
+              all_tickers.extend(tickers)
+          
+          print(f"Total available tickers: {len(all_tickers)}")
+          
+          # Load fantasy team
+          team_file = 'fantasy_team.json'
+          if not os.path.exists(team_file):
+              print("ERROR: fantasy_team.json not found! Please create it first.")
+              exit(1)
+          
+          with open(team_file, 'r') as f:
+              team_data = json.load(f)
+          
+          team = team_data.get('team', [])
+          starting_prices = team_data.get('starting_prices', {})  # When fantasy team was created
+          last_week_prices = team_data.get('last_week_prices', {})  # Previous Monday
+          
+          if not team:
+              print("ERROR: No team found in fantasy_team.json")
+              exit(1)
+          
+          print(f"Loaded team: {team}")
+          
+          # Fetch current prices for ALL tickers
+          current_prices = {}
+          for ticker in all_tickers:
+              try:
+                  quote = finnhub_client.quote(ticker)
+                  current_prices[ticker] = quote['c']  # current price
+              except Exception as e:
+                  print(f"Failed to fetch {ticker}: {e}")
+          
+          print(f"Fetched prices for {len(current_prices)} tickers")
+          
+          # If starting prices are empty, this is the first run - set them now
+          if not starting_prices:
+              starting_prices = current_prices.copy()
+              last_week_prices = current_prices.copy()
+              print("First run: Set starting prices for all tickers")
+              
+              # Post initialization message
+              date_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+              init_lines = [f"🏆 Fantasy Stock Game - INITIALIZED - {date_str}", ""]
+              init_lines.append("YOUR TEAM:")
+              init_lines.append("Ticker  Price")
+              init_lines.append("------  -----")
+              
+              for ticker in sorted(team):
+                  price = starting_prices.get(ticker, 0)
+                  init_lines.append(f"{ticker:<6}  ${price:>6.2f}")
+              
+              init_lines.append("")
+              init_lines.append("Baseline set! Check back next Monday for your first score.")
+              
+              init_message = "```\n" + "\n".join(init_lines) + "\n```"
+              
+              # Post to Discord
+              discord_token = os.getenv('DISCORD_BOT_TOKEN')
+              channel_id = os.getenv('DISCORD_FANTASY_CHANNEL_ID')
+              
+              if discord_token and channel_id:
+                  url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+                  headers = {
+                      'Authorization': f'Bot {discord_token}',
+                      'Content-Type': 'application/json'
+                  }
+                  
+                  response = requests.post(url, headers=headers, json={'content': init_message})
+                  if response.status_code in [200, 201]:
+                      print("Posted initialization message to Discord")
+              
+              # Save and exit
+              team_data = {
+                  'team': team,
+                  'starting_prices': starting_prices,
+                  'last_week_prices': last_week_prices,
+                  'last_updated': datetime.now().strftime('%Y-%m-%d')
+              }
+              
+              with open(team_file, 'w') as f:
+                  json.dump(team_data, f, indent=2)
+              
+              print("Saved starting prices. Run again next Monday for scoring.")
+              exit(0)
+          
+          # Calculate YOUR team performance
+          team_performance = []
+          total_weekly_gain = 0
+          total_overall_gain = 0
+          
+          for ticker in team:
+              starting = starting_prices.get(ticker, 0)
+              last_week = last_week_prices.get(ticker, 0)
+              current = current_prices.get(ticker, 0)
+              
+              if last_week > 0:
+                  weekly_gain_pct = ((current - last_week) / last_week) * 100
+              else:
+                  weekly_gain_pct = 0
+              
+              if starting > 0:
+                  overall_gain_pct = ((current - starting) / starting) * 100
+              else:
+                  overall_gain_pct = 0
+              
+              total_weekly_gain += weekly_gain_pct
+              total_overall_gain += overall_gain_pct
+              
+              team_performance.append({
+                  'ticker': ticker,
+                  'starting': starting,
+                  'last_week': last_week,
+                  'current': current,
+                  'weekly_gain': weekly_gain_pct,
+                  'overall_gain': overall_gain_pct
+              })
+          
+          # Calculate BEST WEEKLY performers (top 11 by this week's gain)
+          weekly_performance = []
+          for ticker in all_tickers:
+              last_week = last_week_prices.get(ticker, 0)
+              current = current_prices.get(ticker, 0)
+              
+              if last_week > 0:
+                  weekly_gain_pct = ((current - last_week) / last_week) * 100
+                  weekly_performance.append({
+                      'ticker': ticker,
+                      'weekly_gain': weekly_gain_pct,
+                      'current': current
+                  })
+          
+          best_weekly = sorted(weekly_performance, key=lambda x: x['weekly_gain'], reverse=True)[:11]
+          best_weekly_total = sum(item['weekly_gain'] for item in best_weekly)
+          
+          # Calculate BEST OVERALL performers (top 11 by cumulative gain)
+          overall_performance = []
+          for ticker in all_tickers:
+              starting = starting_prices.get(ticker, 0)
+              current = current_prices.get(ticker, 0)
+              
+              if starting > 0:
+                  overall_gain_pct = ((current - starting) / starting) * 100
+                  overall_performance.append({
+                      'ticker': ticker,
+                      'overall_gain': overall_gain_pct,
+                      'current': current
+                  })
+          
+          best_overall = sorted(overall_performance, key=lambda x: x['overall_gain'], reverse=True)[:11]
+          best_overall_total = sum(item['overall_gain'] for item in best_overall)
+          
+          # Format Discord messages
+          date_str = datetime.now().strftime('%Y-%m-%d')
+          
+          # Message 1: YOUR TEAM
+          team_lines = [f"🏆 Fantasy Stock Game - {date_str}", ""]
+          team_lines.append("YOUR TEAM:")
+          team_lines.append("Ticker  Weekly   Overall")
+          team_lines.append("------  ------   -------")
+          
+          for item in sorted(team_performance, key=lambda x: x['overall_gain'], reverse=True):
+              ticker = item['ticker']
+              weekly = f"{item['weekly_gain']:+.1f}%"
+              overall = f"{item['overall_gain']:+.1f}%"
+              team_lines.append(f"{ticker:<6}  {weekly:>6}   {overall:>7}")
+          
+          team_lines.append("")
+          team_lines.append(f"THIS WEEK:  {total_weekly_gain:+.1f}%")
+          team_lines.append(f"OVERALL:    {total_overall_gain:+.1f}%")
+          
+          team_message = "```\n" + "\n".join(team_lines) + "\n```"
+          
+          # Message 2: BEST WEEKLY TEAM
+          weekly_lines = ["BEST TEAM THIS WEEK:"]
+          weekly_lines.append("Ticker  Weekly Gain")
+          weekly_lines.append("------  -----------")
+          
+          for item in best_weekly:
+              ticker = item['ticker']
+              gain = f"{item['weekly_gain']:+.1f}%"
+              weekly_lines.append(f"{ticker:<6}  {gain:>11}")
+          
+          weekly_lines.append("")
+          weekly_lines.append(f"TOTAL: {best_weekly_total:+.1f}%")
+          
+          weekly_message = "```\n" + "\n".join(weekly_lines) + "\n```"
+          
+          # Message 3: BEST OVERALL TEAM
+          overall_lines = ["BEST TEAM OVERALL (since start):"]
+          overall_lines.append("Ticker  Overall Gain")
+          overall_lines.append("------  ------------")
+          
+          for item in best_overall:
+              ticker = item['ticker']
+              gain = f"{item['overall_gain']:+.1f}%"
+              overall_lines.append(f"{ticker:<6}  {gain:>12}")
+          
+          overall_lines.append("")
+          overall_lines.append(f"TOTAL: {best_overall_total:+.1f}%")
+          
+          overall_message = "```\n" + "\n".join(overall_lines) + "\n```"
+          
+          # Message 4: CURRENT TEAM COMPOSITION
+          composition_lines = ["YOUR CURRENT TEAM:"]
+          composition_lines.append(", ".join(team))
+          
+          composition_message = "```\n" + "\n".join(composition_lines) + "\n```"
+          
+          # Save updated team data
+          team_data = {
+              'team': team,
+              'starting_prices': starting_prices,
+              'last_week_prices': current_prices,  # This week becomes next week's "last week"
+              'last_updated': date_str
+          }
+          
+          with open(team_file, 'w') as f:
+              json.dump(team_data, f, indent=2)
+          
+          print(f"Saved updated prices to {team_file}")
+          
+          # Post to Discord
+          discord_token = os.getenv('DISCORD_BOT_TOKEN')
+          channel_id = os.getenv('DISCORD_FANTASY_CHANNEL_ID')
+          
+          if discord_token and channel_id:
+              url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+              headers = {
+                  'Authorization': f'Bot {discord_token}',
+                  'Content-Type': 'application/json'
+              }
+              
+              # Send YOUR team performance
+              response = requests.post(url, headers=headers, json={'content': team_message})
+              if response.status_code in [200, 201]:
+                  print("Posted team performance to Discord")
+              else:
+                  print(f"Failed to post team: {response.status_code} - {response.text}")
+              
+              # Send BEST WEEKLY team
+              response = requests.post(url, headers=headers, json={'content': weekly_message})
+              if response.status_code in [200, 201]:
+                  print("Posted best weekly team to Discord")
+              
+              # Send BEST OVERALL team
+              response = requests.post(url, headers=headers, json={'content': overall_message})
+              if response.status_code in [200, 201]:
+                  print("Posted best overall team to Discord")
+              
+              # Send current composition
+              response = requests.post(url, headers=headers, json={'content': composition_message})
+              if response.status_code in [200, 201]:
+                  print("Posted team composition to Discord")
+          else:
+              print("Discord credentials not configured")
+          
+          EOF
+      
+      - name: Commit fantasy team file (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [ -f fantasy_team.json ]; then
+            git add fantasy_team.json
+            git diff --staged --quiet || git commit -m "Update fantasy team data
+            
+            Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+            git push
+          fi
